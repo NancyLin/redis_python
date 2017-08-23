@@ -1,6 +1,6 @@
 ### 文章投票网站的redis相关实现
 ----------
-### 需求：###
+###需求:###
 要构建一个文章投票网站，文章需要在**一天**内至少获得200张票，才能优先显示在**当天**文章列表前列。
 
 但是为了避免发布时间较久的文章由于累计的票数较多而一直停留在文章列表前列，我们需要有随着时间流逝而不断减分的评分机制。
@@ -288,10 +288,10 @@ if __name__ == '__main__':
 
 文章投票网站的相关redis实现设计，具体分析请看博客：https://segmentfault.com/a/1190000010741281
 
-  [1]: /img/bVS4cn
-  [2]: /img/bVS4de
-  [3]: /img/bVTeoa
-  [4]: /img/bVS9jg
-  [5]: /img/bVTeoA
-  [6]: /img/bVTerN
+  [1]: https://segmentfault.com/img/bVS4cn?w=26&h=219
+  [2]: https://segmentfault.com/img/bVS4de?w=26&h=219
+  [3]: https://segmentfault.com/img/img/bVTeoa?w=26&h=219
+  [4]: https://segmentfault.com/img/bVS9jg?w=26&h=219
+  [5]: https://segmentfault.com/img/bVTeoA?w=26&h=219
+  [6]: https://segmentfault.com/img/bVTerN?w=891&h=155
   [7]: https://github.com/NancyLin/redis_python/tree/master/article_voted
