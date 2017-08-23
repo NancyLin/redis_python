@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import time
+import unittest
 
 # 截止时间，一周
 ONE_WEEK_IN_SECONDS = 7 * (24 * 60 * 60)
@@ -23,7 +24,7 @@ VOTE_SCORE = 432
 """
 def postArticle(conn, user, title, link):
     # 创建一个新的文章ID
-    article_id = str(conn.INCR('article:'))
+    article_id = str(conn.incr('article:'))
 
     # 将文章发布者ID添加到记录文章已投票用户名单的集合中，并用EXPIRE为这个集合设置过期时间
     voted = 'voted:' + article_id
@@ -143,9 +144,85 @@ def getGroupArticles(conn, group, page, order = 'score:'):
     key = order + group
 
     if not conn.exists(key):
-        conn.zinterstore(key, ['group:' + group, order], agregate = 'max')
+        conn.zinterstore(key, ['group:' + group, order], aggregate = 'max')
         conn.expire(key, 60)
 
     return getArticles(conn, page, key)
+
+"""
+测试
+"""
+class TestArticle(unittest.TestCase):
+    """
+    初始化redis连接
+    """
+    def setUp(self):
+        import redis
+        self.conn = redis.Redis(db=15)
+
+    """
+    删除redis连接
+    """
+    def tearDown(self):
+        del self.conn
+        print
+        print
+
+    """
+    测试文章的投票过程
+    """
+    def testArticleFunctionality(self):
+        conn = self.conn
+        import pprint
+
+        # 发布文章
+        article_id = str(postArticle(conn, 'username', 'A titile', 'http://www.baidu.com'))
+        print "我发布了一篇文章，id为：", article_id
+        print
+        self.assertTrue(article_id)
+        
+        article = 'article:' + article_id
+        # 显示文章保存的散列格式
+        print "文章保存的散列格式如下："
+        article_hash = conn.hgetall(article)
+        print article_hash
+        print
+        self.assertTrue(article)
+
+        # 为文章投票
+        voteArticle(conn, 'other_user', article)
+        print '我们为该文章投票，目前该文章的票数：'
+        votes = int(conn.hget(article, 'votes'))
+        print votes
+        print
+        self.assertTrue(votes > 1)
+
+        print '当前得分最高的文章是：'
+        articles = getArticles(conn, 1)
+        pprint.pprint(articles)
+        print
+        self.assertTrue(len(articles) >= 1)
+
+        # 将文章推入到群组
+        addRemoveGroups(conn, article_id, ['new-group'])
+        print "我们将文章推到新的群组，其他文章包括："
+        articles = getGroupArticles(conn, 'new-group', 1)
+        pprint.pprint(articles)
+        print
+        self.assertTrue(len(articles) >= 1)
+
+        测试结束，删除所有的数据结构
+        to_del = (
+            conn.keys('time:*') + conn.keys('voted:*') + conn.keys('score:*') + 
+            conn.keys('articles:*') + conn.keys('group:*')
+        )
+
+        if to_del:
+            conn.delete(*to_del)
+
+if __name__ == '__main__':
+	unittest.main()
+
+
 
     
