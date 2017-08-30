@@ -73,4 +73,17 @@ def clearSession(conn):
         conn.delete(*session_key)
         conn.hdel('login:', *tokens)
         conn.zrem('recent:', *tokens)
+
+"""
+对购物车进行更新，如果用户订购某件商品数量大于0，将商品信息添加到 “用户的购物车散列”中，如果购买商品已经存在，那么更新购买数量
+
+@param {object}
+"""
+def addToCart(conn, session, item, count):
+    if count <= 0:
+    	# 从购物车移除指定商品
+        conn.hrem('cart:' + session, item)
+    else:
+    	# 将指定商品添加到对应的购物车中
+        conn.hset('cart:' + session, item, count)
     
