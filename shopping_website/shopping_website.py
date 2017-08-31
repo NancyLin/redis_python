@@ -65,11 +65,13 @@ def clearSession(conn):
         end_index = min(size - LIMIT, 100)
         tokens = conn.zrange('recent:', 0, end_index - 1)
         
+        # 将要删除的key都推入到数组中，要时候一起删除
         session_keys = []
         for token in tokens:
             session_keys.append('viewed:' + token)
+            session_keys.append('cart:' + token)
         
-        # 批量删除相应的用户最近浏览商品有序集合，登录令牌与用户映射关系的散列和记录最近登录用户的有序集合
+        # 批量删除相应的用户最近浏览商品有序集合，用户的购物车，登录令牌与用户映射关系的散列和记录最近登录用户的有序集合
         conn.delete(*session_key)
         conn.hdel('login:', *tokens)
         conn.zrem('recent:', *tokens)
@@ -78,6 +80,10 @@ def clearSession(conn):
 对购物车进行更新，如果用户订购某件商品数量大于0，将商品信息添加到 “用户的购物车散列”中，如果购买商品已经存在，那么更新购买数量
 
 @param {object}
+@param {string} session
+@param {string} item
+@param {float}  count
+
 """
 def addToCart(conn, session, item, count):
     if count <= 0:
@@ -86,4 +92,30 @@ def addToCart(conn, session, item, count):
     else:
     	# 将指定商品添加到对应的购物车中
         conn.hset('cart:' + session, item, count)
+
+"""
+在用户请求页面时，对于不能被缓存的请求，直接生成并返回页面，
+对于可以被缓存的请求，先从缓存取出缓存页面，如果缓存页面不存在，那么会生成页面并将其缓存在Redis，最后将页面返回给函数调用者。
+
+@param {object} conn
+@param {string} request
+@param {callback}
+
+@return 
+"""
+def cacheRequest(conn, request, callback):
+    # 判断请求是否能被缓存，不能的话直接调用回调函数
+    if not canCache(request):
+        return callback(request)
+    
+    # 将请求转换为一个简单的字符串健，方便之后进行查找
+    page_key = 'cache:' + hash_request(request)
+    content = conn.get(page_key)
+    
+    # 没有缓存的页面，调用回调函数生成页面，并缓存到redis中
+    if not content:
+        content = callback(request)
+        conn.setex(page_key, content, 300)
+
+    return content
     
