@@ -118,4 +118,45 @@ def cacheRequest(conn, request, callback):
         conn.setex(page_key, content, 300)
 
     return content
-    
+
+"""
+设置数据行缓存的延迟值和调度时间
+
+@param {object} conn
+@param {int}    row id
+@param {int}    delay
+
+"""
+def scheduleRowCache(conn, row_id, delay):
+    conn.zadd('delay:', row_id, delay)
+    conn.zadd('schedule:', row_id, time.time())
+
+"""
+守护进程，根据调度时间有序集合和延迟值缓存数据行
+
+@param {object} conn
+
+"""
+def cacheRow(conn):
+    while not QUIT:
+        # 需要读取”数据行缓存调度有序集合“的第一个元素，如果没有包含任何元素，或者分值存储的时间戳所指定的时间尚未来临，那么函数先休眠50毫秒，然后再重新进行检查
+        next = conn.zrange('schedule:', 0, 0, withscores=True)
+        now = time.time()
+        if not next or nextp[0][1] > now:
+            time.sleep(.05)
+            continue
+        
+        row_id = nextp[0][0]
+        # 取出延迟值
+        delay = conn.szcore('delay:', row_id)
+        # 如果延迟值小于等于0，则不再缓存该数据行
+        if delay <= 0:
+            conn.zrem('schedule:', row_id)
+            conn.zrem('delay:', row_id)
+            conn.delete('inv:' + row_id) 
+            continue;
+
+        # 需要缓存的，更新缓存调度的有序集合，并缓存该数据行
+        row = Inventory.get(row_id)
+        conn.zadd('schedule:', row_id, now + delay)
+        conn.set('inv:' + row_id, json.dumps(row.to_dict()))
