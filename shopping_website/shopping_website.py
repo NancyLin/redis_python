@@ -35,6 +35,8 @@ def updateToken(conn, token, user, item = None):
     if item:
         conn.zadd('viewed:' + token, item, timestamp)
         conn.zremrangebyrank('viewed:' + token, 0, -26)
+        # 记录每个商品的浏览量
+        conn.zincrby('viewed:', item, -1)
 
 """
 定期清理会话数据，只保留最新的1000万个会话。
@@ -160,3 +162,34 @@ def cacheRow(conn):
         row = Inventory.get(row_id)
         conn.zadd('schedule:', row_id, now + delay)
         conn.set('inv:' + row_id, json.dumps(row.to_dict()))
+
+"""
+守护进程，删除所有排名在20000名之后的商品，并将删除之后剩余的所有商品浏览次数减半，5分钟执行一次
+
+@param {object} conn
+
+"""
+def rescaleViewed(conn):
+    while not QUIT:
+        conn.zremrangebyrank('viewed:', 0, -20001)
+        conn.zinterstore('viewed:', {'viewed:', .5})
+        time.sleep(300)
+
+"""
+判断页面是否能被缓存，检查商品是否被缓存以及页面是否为商品页面，根据商品排名来判断是否需要缓存
+
+@param {object} conn
+@param {string} request
+
+@return {boolean}
+"""
+def canCache(conn, request):
+    item_id = extract_item_id(request)
+    # 检查这个页面能否被缓存以及这个页面是否为商品页面
+    if no item_id or is_dynamic(request):
+        return False
+
+    # 商品的浏览排名
+    rank = conn.rank('viewed:', item_id)
+    return rank is not Null and rank < 10000
+
