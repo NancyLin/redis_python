@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import time
+import urlparse
 
 """
 获取并返回令牌对应的用户
@@ -53,7 +54,7 @@ QUIT = False
 # 限制保留的最大会话数据
 LIMIT = 10000000
 
-def clearSession(conn):
+def cleanFullSession(conn):
    # 循环判断，如果是cron job可以不用循环
    while not QUIT:
        # 查询最近登录用户会话数
@@ -111,7 +112,7 @@ def cacheRequest(conn, request, callback):
         return callback(request)
     
     # 将请求转换为一个简单的字符串健，方便之后进行查找
-    page_key = 'cache:' + hash_request(request)
+    page_key = 'cache:' + hashRequest(request)
     content = conn.get(page_key)
     
     # 没有缓存的页面，调用回调函数生成页面，并缓存到redis中
@@ -120,6 +121,59 @@ def cacheRequest(conn, request, callback):
         conn.setex(page_key, content, 300)
 
     return content
+
+"""
+判断页面是否能被缓存，检查商品是否被缓存以及页面是否为商品页面，根据商品排名来判断是否需要缓存
+
+@param {object} conn
+@param {string} request
+
+@return {boolean}
+"""
+def canCache(conn, request):
+    # 根据请求的URL，得到商品ID
+    item_id = extractItemId(request)
+    # 检查这个页面能否被缓存以及这个页面是否为商品页面
+    if no item_id or isDynamic(request):
+        return False
+
+    # 商品的浏览排名
+    rank = conn.zrank('viewed:', item_id)
+    return rank is not None and rank < 10000
+
+"""
+解析请求的URL,取得query中的item id
+
+@param {string} request
+
+@return {string}
+"""
+def extractItemId(request):
+    parsed = urlparse.urlparse(request)
+    # 返回query字典
+    query  = urlparse.parse_qs(parsed.query)
+    return (query.get('item') or [None])[0]
+
+"""
+判断请求的页面是否动态页面
+
+@param {string} request
+
+@return {boolean}
+"""
+def isDynamic(request):
+    parsed = urlparse.urlparse(request)
+    query = urlparse.parse_qs(parsed.query)
+    return '_' in query
+
+"""
+将请求转换为一个简单的字符串健，方便之后进行查找
+@param {string} request
+
+@return {string}
+"""
+def hashRequest(request):
+    return str(hash(request))
 
 """
 设置数据行缓存的延迟值和调度时间
@@ -150,7 +204,7 @@ def cacheRow(conn):
         
         row_id = nextp[0][0]
         # 取出延迟值
-        delay = conn.szcore('delay:', row_id)
+        delay = conn.zscore('delay:', row_id)
         # 如果延迟值小于等于0，则不再缓存该数据行
         if delay <= 0:
             conn.zrem('schedule:', row_id)
@@ -161,7 +215,7 @@ def cacheRow(conn):
         # 需要缓存的，更新缓存调度的有序集合，并缓存该数据行
         row = Inventory.get(row_id)
         conn.zadd('schedule:', row_id, now + delay)
-        conn.set('inv:' + row_id, json.dumps(row.to_dict()))
+        conn.set('inv:' + row_id, json.dumps(row.toDict()))
 
 """
 守护进程，删除所有排名在20000名之后的商品，并将删除之后剩余的所有商品浏览次数减半，5分钟执行一次
@@ -171,25 +225,23 @@ def cacheRow(conn):
 """
 def rescaleViewed(conn):
     while not QUIT:
-        conn.zremrangebyrank('viewed:', 0, -20001)
+        conn.zremrangebyrank('viewed:', 20000, -1)
         conn.zinterstore('viewed:', {'viewed:', .5})
         time.sleep(300)
 
 """
-判断页面是否能被缓存，检查商品是否被缓存以及页面是否为商品页面，根据商品排名来判断是否需要缓存
-
-@param {object} conn
-@param {string} request
-
-@return {boolean}
+库存类，库存的商品信息
 """
-def canCache(conn, request):
-    item_id = extract_item_id(request)
-    # 检查这个页面能否被缓存以及这个页面是否为商品页面
-    if no item_id or is_dynamic(request):
-        return False
+class Inventory(object):
+    def __init__(self, id):
+        self.id = id
 
-    # 商品的浏览排名
-    rank = conn.rank('viewed:', item_id)
-    return rank is not Null and rank < 10000
+    @classmethod
+    def get(cls, id):
+        return Inventory(id)
+    
+    def toDict(self):
+        return {'id':self.id, 'data':'data to cache...','cached':time.time()}
+
+
 
