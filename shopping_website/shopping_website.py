@@ -3,6 +3,10 @@
 
 import time
 import urlparse
+import uuid
+import threading
+import unittest
+import json
 
 """
 获取并返回令牌对应的用户
@@ -55,11 +59,11 @@ QUIT = False
 LIMIT = 10000000
 
 def cleanFullSession(conn):
-   # 循环判断，如果是cron job可以不用循环
-   while not QUIT:
-       # 查询最近登录用户会话数
-       size = conn.zcard('recent:')
-       # 没有超过限制，休眠1秒再继续执行
+    # 循环判断，如果是cron job可以不用循环
+    while not QUIT:
+        # 查询最近登录用户会话数
+        size = conn.zcard('recent:')
+        # 没有超过限制，休眠1秒再继续执行
         if size <= LIMIT:
             time.sleep(1)
             continue
@@ -75,7 +79,7 @@ def cleanFullSession(conn):
             session_keys.append('cart:' + token)
         
         # 批量删除相应的用户最近浏览商品有序集合，用户的购物车，登录令牌与用户映射关系的散列和记录最近登录用户的有序集合
-        conn.delete(*session_key)
+        conn.delete(*session_keys)
         conn.hdel('login:', *tokens)
         conn.zrem('recent:', *tokens)
 
@@ -108,7 +112,7 @@ def addToCart(conn, session, item, count):
 """
 def cacheRequest(conn, request, callback):
     # 判断请求是否能被缓存，不能的话直接调用回调函数
-    if not canCache(request):
+    if not canCache(conn, request):
         return callback(request)
     
     # 将请求转换为一个简单的字符串健，方便之后进行查找
@@ -134,7 +138,7 @@ def canCache(conn, request):
     # 根据请求的URL，得到商品ID
     item_id = extractItemId(request)
     # 检查这个页面能否被缓存以及这个页面是否为商品页面
-    if no item_id or isDynamic(request):
+    if not item_id or isDynamic(request):
         return False
 
     # 商品的浏览排名
@@ -198,11 +202,11 @@ def cacheRow(conn):
         # 需要读取”数据行缓存调度有序集合“的第一个元素，如果没有包含任何元素，或者分值存储的时间戳所指定的时间尚未来临，那么函数先休眠50毫秒，然后再重新进行检查
         next = conn.zrange('schedule:', 0, 0, withscores=True)
         now = time.time()
-        if not next or nextp[0][1] > now:
+        if not next or next[0][1] > now:
             time.sleep(.05)
             continue
         
-        row_id = nextp[0][0]
+        row_id = next[0][0]
         # 取出延迟值
         delay = conn.zscore('delay:', row_id)
         # 如果延迟值小于等于0，则不再缓存该数据行
@@ -242,6 +246,176 @@ class Inventory(object):
     
     def toDict(self):
         return {'id':self.id, 'data':'data to cache...','cached':time.time()}
+
+"""
+测试
+"""
+class TestShoppingWebsite(unittest.TestCase):
+    def setUp(self):
+        import redis
+        self.conn = redis.Redis(db=15)
+    
+    def tearDown(self):
+        conn = self.conn
+        to_del = (
+            conn.keys('login:*') + conn.keys('recent:*') + conn.keys('viewed:*') +
+            conn.keys('cart:*') + conn.keys('cache:*') + conn.keys('delay:*') + 
+            conn.keys('schedule:*') + conn.keys('inv:*'))
+
+        if to_del:
+            conn.delete(*to_del)
+
+        del self.conn
+
+        global QUIT, LIMIT
+        QUIT = False
+        LIMIT = 10000000
+        print
+        print
+
+    def testLoginCookies(self):
+        conn = self.conn
+        global LIMIT, QUIT
+        token = str(uuid.uuid4())
+
+        updateToken(conn, token, 'username', 'itemX')
+        print "We just logged-in/updated token:", token
+        print "For user:", 'username'
+        print
+
+        print "What username do we get when we look-up that tokan?"
+        r = checkToken(conn, token)
+        print r
+        print
+        self.assertTrue(r)
+
+        print "Let's drop the maximun number of cookies to 0 to clear them out"
+        print "We will start a thread to do the cleaning, while we stop it later"
+
+        LIMIT = 0
+        t = threading.Thread(target = cleanFullSession, args = (conn,))
+        t.setDaemon(1)
+        t.start()
+        time.sleep(1)
+        QUIT = True
+        time.sleep(2)
+        if t.isAlive():
+            raise Exception("The clean sessions thread is still slive?!?")
+
+        s = conn.hlen('login:')
+        print "The current number of session still available is:", s
+        self.assertFalse(s)
+
+    def testShoppingCartCookies(self):
+        conn = self.conn
+        global LIMIT, QUIT
+        token = str(uuid.uuid4())
+
+        print "We'll refresh our session..."
+        updateToken(conn, token, 'username', 'itemX')
+        print "And add an item to the shopping cart"
+        addToCart(conn, token, "itemY", 3)
+        r = conn.hgetall('cart:' + token)
+        print "Our Shopping cart currently has:", r
+        print
+
+        self.assertTrue(len(r) >= 1)
+
+        print "Let's clean out our sessions an carts"
+        LIMIT = 0
+        t = threading.Thread(target=cleanFullSession, args=(conn,))
+        t.setDaemon(1)
+        t.start()
+        time.sleep(1)
+        QUIT = True
+        time.sleep(2)
+        if t.isAlive():
+            raise Exception("The clean sessions thread is still alive?!?")
+
+        r = conn.hgetall('cart:' + token)
+        print "Our shopping cart now contains:", r
+
+        self.assertFalse(r)
+
+    def testCacheRequest(self):
+        conn = self.conn
+        token = str(uuid.uuid4())
+
+        def callback(request):
+            return "content for " + request
+
+        updateToken(conn, token, 'username', 'itemX')
+        url = 'http://test.com/?item=itemX'
+        print "We are going to cache a simple request against", url
+        result = cacheRequest(conn, url, callback)
+        print "We got initial content:", repr(result)
+        print
+
+        self.assertTrue(result)
+
+        print "To test that we've cached the request, we'll pass a bad callback"
+        result2 = cacheRequest(conn, url, None)
+        print "We ended up getting the same response!", repr(result2)
+
+        self.assertEquals(result, result2)
+
+        self.assertFalse(canCache(conn, 'http://test.com/'))
+        self.assertFalse(canCache(conn, 'http://test.com/?item=itemX&_=1234567'))
+
+    def testCacheRows(self):
+        import pprint
+        conn = self.conn
+        global  QUIT
+
+        print "First, let's schedule caching of itemX every 5 seconds"
+        scheduleRowCache(conn, 'itemX', 5)
+        print "Our schedule looks like:"
+        s = conn.zrange('schedule:', 0, -1, withscores = True)
+        pprint.pprint(s)
+        self.assertTrue(s)
+
+        print "We'll start a caching thread that will cache the data..."
+        t = threading.Thread(target=cacheRow, args=(conn,))
+        t.setDaemon(1)
+        t.start()
+        time.sleep(1)
+        print "Our cached data looks like:"
+        r = conn.get('inv:itemX')
+        print repr(r)
+        self.assertTrue(r)
+        print
+        print "We'll check again in 5 seconds..."
+        time.sleep(5)
+        print "Notice that the data has changed..."
+        r2 = conn.get('inv:itemX')
+        print repr(r2)
+        print
+        self.assertTrue(r2)
+        self.assertTrue(r != r2)
+
+        print "Let's force un-caching"
+        scheduleRowCache(conn, 'itemX', -1)
+        time.sleep(1)
+        r = conn.get('inv:itemX')
+        print "The cache was cleared?", not r
+        print
+        self.assertFalse(r)
+
+        QUIT = True
+        time.sleep(2)
+        if t.isAlive():
+            raise Exception("The database caching thread is still alive?!?")
+
+
+if __name__ == '__main__':
+    unittest.main()
+
+
+
+
+
+
+
 
 
 
