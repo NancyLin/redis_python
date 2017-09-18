@@ -361,7 +361,7 @@ zscore key-name member
 zrange key-name start stop [withscores]
 返回有序集合中排名介于start和stop之间的成员，如果给定了可选的withscores选项，那么命令会将成员的分值也一并返回
 
-#### 3. 有序集合的范围型数据获取命令和范围型数据删除命令，以及并集命令和交集命令 ####
+2. 有序集合的范围型数据获取命令和范围型数据删除命令，以及并集命令和交集命令
 
 - zrevrank
 
@@ -405,9 +405,218 @@ zunionscore dest-key key-count key [key ...] [weights weight [weight ...]] [aggr
 
 对于，用户可以将集合作为输入传给zinterscore和zunionscore，命令会将集合看作是成员分值全为1的有序集合来处理。
 
+#### 6. 发布与订阅 ####
 
+发布与订阅（又称pub/sub）的特点是订阅者（listener）负责订阅频道（channel），发送者（publisher）负责向频道发送二进制字符串消息（binary string message）。每当有消息被发送至给定频道时，频道的所有订阅者都会接收到消息。
 
+也可以把频道看作是电台，其中订阅者可以同时收听多个电台，而发送者则可以在任何电台发送消息。
 
+1.发布与订阅命令
 
+- subscribe
 
+subscribe channel [channel ...]
+订阅给定的一个或多个频道
+
+- unsubscribe
+
+unsubscribe [channel [channel ...]]
+退订给定的一个或多个频道，如果执行时没有给定任何频道，那么退订所有频道
+
+- publish
+
+publish channel message
+向给定频道发送消息
+
+- psubcribe
+
+psubcribe pattern [pattern ...]
+订阅与给定模式相匹配的所有频道
+
+- punsubcribe
+
+punsubcribe [pattern [pattern ...]]
+退订给定的模式，如果执行时没有给定任何模式，那么退订所有模式
+
+示例代码如下：
+```
+import time
+import threading
+import unittest
+"""
+发布者
+"""
+def publisher(conn, n):
+	# 在刚开始执行时先休眠，让订阅者有足够的时间来连接服务器并监听消息
+    time.sleep(1)
+    for i in xrange(n):
+        conn.publish('channel', i)
+        # 发布消息之后进行短暂的休眠，让消息可以一条一条地出现
+        time.sleep(1)
+
+"""
+发布订阅模式
+"""
+def runPubsub(conn):
+	# 启动发送者线程发送3条消息
+    threading.Thread(target=publisher, args=(conn,3,)).start()
+    # 创建发布与订阅对象，并让它订阅给定的频道
+    pubsub = conn.pubsub()
+    pubsub.subscribe(['channel'])
+    count = 0
+    # 通过遍历函数pubsub.listen()执行结果来监听订阅消息
+    for item in pubsub.listen():
+        print item
+        count += 1
+        if count == 4:
+        	# 在接收到一条订阅反馈消息和三条发布者发送消息之后，执行退订操作，停止监听新消息
+            pubsub.unsubscribe()
+        # 客户端在接收到退订反馈消息之后就不再接收消息
+        if count == 5:
+        	break
+
+"""
+测试
+"""
+class TestRedisPubSub(unittest.TestCase):
+    def setUp(self):
+        import redis
+        self.conn = redis.Redis(db=15)
+    
+    def tearDown(self):
+        del self.conn
+        print
+        print
+
+    def testRunPubsub(self):
+        runPubsub(self.conn)
+
+if __name__ == '__main__':
+    unittest.main()
+```
+
+虽然redis的发布订阅模式很有用，但我们比较少用，主要原因有以下：
+
+（1）与redis的稳定性有关。对于旧版redis来说，如果客户端订阅了某个或某些频道，读取的消息速度不够快，不断积压的消息会使redis输出缓冲区的体积变得越来越大，导致redis速度变慢甚至直接崩溃，也可能导致操作系统强制杀死进程，或者操作系统直接不可用。
+
+新版的redis会自动断开不符合client-output-buffer-limit pubsub配置选项要求的订阅客户端。
+
+（2）和数据传输的可靠性有关。任何网络系统在执行操作时都有可能会遇到断线情况，如果客户端在执行订阅操作的过程中断线，那么客户端将丢失在断线期间发送的所有消息。
+
+如果喜欢简单易用的pushlish命令和subscribe命令，并且可以承担可能会丢失一部分数据的风险，那么也可以继续使用redis提供的发布和订阅特性。
+
+#### 7.其他命令 ####
+
+这节的命令可以用于处理多种类型的数据。
+
+1.排序
+
+- sort
+
+sort source-key [by pattern][limit offset count][get pattern [get pattern...]][asc|desc][alpha][store dest-key]
+根据给定的选项，对输入的列表，集合或者有序集合进行排序，然后返回或者存储排序的结果
+
+sort命令可以根据降序而不是默认的升序来排序元素，将元素看做是数字来排序，或者将元素看做是二进制字符串来排序；使用被排序元素之外的其他值作为权重来进行排序，甚至可以从输入的列表，集合，有序集合以外的其他地方进行取值。
+
+如以下代码演示了通过sort将散列存储的数据作为权重进行排序，以及怎样获取并返回散列存储的数据：
+```
+# 首先将一些元素添加到列表里面
+>>> conn.rpush('sort-input', 23, 15, 110, 7)
+4
+
+# 根据数字大小对元素进行排序
+>>> conn.sort('sort-input')
+['7','15','23','110']
+
+# 根据字母表顺序对元素进行排序
+>>> conn.sort('sort-input', alpha=True)
+['110','15','23','7']
+
+# 添加一些用于执行排序操作和获取操作的附加数据
+>>> conn.hset('d-7', 'field', 5)
+>>> conn.hset('d-15', 'field', 1)
+>>> conn.hset('d-23', 'field', 9)
+>>> conn.hset('d-110', 'field', 3)
+
+# 将散列的域field用作权重，对sort-input列表进行排序
+>>> conn.sort('sort-input', by='d-*->field')
+['15','110','7','23']
+
+# 获取外部数据，并将它们用作命令的返回值，而不是返回被排序的数据
+>>> conn.sort('sort-input', by='d-*->field', get='d-*->field')
+['1','3','5','9']
+```
+
+#### 8.基本的Redis事务 ####
+
+Redis的基本事务需要用到multi命令和exec命令，这种事务可以让一个客户端在不被其他客户端打断的情况下执行多个命令。
+
+被multi和exec命令包围的所有命令会一个接一个地执行，直到所有命令都执行完毕为止。当一个事务执行完毕后，redis才会处理其他客户端的命令。
+
+当redis从一个客户端那里接收到multi命令时，Redis会将这个客户端之后发送的所有命令都放在一个队列里面，直到这个客户端发送exec命令为止，然后redis就会在不被打断的情况下，一个接一个地执行存储在队列里面的命令。
+
+redis事务在python客户端上面是由pipeline实现的，对连接对象调用pipeline方法创建一个事务，在一切正常的情况下，客户端会自动地使用multi和exec包裹起用户输入的多个命令，此外，为了减少redis与客户端之间的通信往返次数，提升执行多个命令时的性能，python的redis客户端会存储起事务包含的多个命令，然后在事务执行时一次性将所有命令都发送给redis。
+
+注意，redis要在接收到exec命令之后，才会执行那些位于multi和exec之间的入队命令。
+
+示例代码如下：
+```
+def trans(conn):
+    # 创建一个事务型流水线对象
+    pipeline = conn.pipeline()
+    # 把计数器的自增操作放入队列
+    pipeline.incr('trans:')
+    time.sleep(.1)
+    # 把计数器的自减操作放入队列
+    pipeline.incr('trans:', -1)
+    # 执行被事务包裹的命令，并打印自增操作的执行结果
+    print pipeline.execute()[0]
+
+# 测试
+for i in xrange(3):
+    threading.Thread(target=trans, args=(self.conn,)).start()
+time.sleep(.5)
+
+```
+
+#### 9.键的过期时间 ####
+
+在使用Redis存储数据的时候，有些数据在某个时间点之后就不再有用，用户可以使用DEL命令显示地删除那些无用数据，也可以通过redis的过期时间特性来让一个键在给定的时限之后自动被删除。
+
+键过期命令只能为整个键设置过期时间，而没办法为键里面的单个元素设置过期时间，为了解决这个问题，可以使用存储时间戳的有序集合来实现针对单个元素的过期操作。
+
+- persist
+
+persist key-name
+移除键的过期时间
+
+- ttl
+
+ttl key-name
+查看给定键距离过期还有多少秒
+
+- expire
+
+expire key-name seconds
+让给定键在指定的秒数之后过期
+
+- expireat
+
+expireat key-name timestamp
+将给定键的过期时间设置为给定的unix时间戳
+
+- pttl
+
+pttl key-name
+查看给定键距离过期时间还有多少毫秒，这个命令在redis2.6或以上版本可用
+
+- pexpire
+
+pexpire key-name milliseconds
+让给定键在指定的豪秒数之后过期，这个命令在redis2.6或以上版本可用
+
+- pexpireat
+
+pexpireat key-name timestamp-milliseconds
+将一个毫秒级精度的unix时间戳设置为给定键的过期时间，这个命令在redis2.6或以上版本
 
