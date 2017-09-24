@@ -221,7 +221,78 @@ $ QUIT
 
 ```
 
+## 4.4 Redis事务 ##
 
+Redis的事务以特殊命令MULTI为开始，之后跟着用户传入多个命令，最后以EXEC结束。但是由于这种简单的事务在EXEC命令被调用之前不会执行任何实际操作，所以用户将没办法根据读取到的数据决定。
+
+除了要使用MULIT命令和EXEC命令外，还需要配合使用WATCH命令，有时候甚至还会用到UNWATCH和DISCARD命令。在用户使用WATCH命令对键进行监视之后，直到用户执行EXEC命令的这段时间，如果有其他客户端抢先对任何被监视的键进行替换、更新或删除等操作，那么当用户尝试执行EXEC命令的时候，事务将失败并返回一个错误，之后用户可以选择重试事务或者放弃事务。
+
+通过以上的这些命令，程序可以再执行某些重要操作时，通过确保自己正在使用的数据并没有发生变化来避免数据出错。
+
+UNWATCH命令可以在WATCH命令执行之后，MULTI命令执行之前对连接进行重置。
+
+DISCARD命令也可以在MULTI命令执行之后，EXEC命令执行之前对连接进行重置。也就是说，用户在使用WATCH监视一个或多个键，接着使用MULTI开始一个新事务并将多个命令入队到事务队列之后，仍然可以通过发送DISCARD命令来取消WATCH命令并清空所有已入队命令。
+
+**Redis没有实现典型的加锁功能**，在访问以写入为目的数据的时候（SQL中的select for update），关系数据库会对被访问的数据进行加锁，直到事务被提交或者被回滚为止，如果有其他客户端试图对被加锁的数据进行写入，那么该客户端将被阻塞，直到第一个事务执行完毕为止。这种加锁方式被称为悲观锁。
+
+因为加锁有可能造成长时间的等待，所以redis为了尽可能减少客户端的等待时间，并不会在执行WATCH命令时对数据进行加锁。只会在数据已经被其他客户端抢先修改的情况下，通知执行了WATCH命令的客户端，这种做法称为乐观锁。这样客户端就不必去等待第一个取得锁的客户端，它们只需要在自己的事务执行失败时进行重试就可以了。
+
+## 4.5 非事务型流水线 ##
+
+在需要执行大量命令的情况下，即使命令实际上不需要放在事务里面执行，但为了通过一次发送所有命令减少通信并降低延迟值，用户也可以将命令包裹在
+MULTI和EXEC里面执行。只是MULTI和EXEC也会消耗资源，并且可能导致其他重要的命令被延迟执行。
+
+实际上，我们可以在不使用MULTI和EXEC的情况下，获得流水线带来的所有好处。
+
+譬如说，使用python执行MULTI和EXEC命令：
+
+pipe = conn.pipeline()
+
+如果用户在执行pipeline时传入True作为参数，或者不传入任何参数，那么客户端将使用MULTI和EXEC包裹起用户要执行的所有命令。
+如果用户传入False为参数，那么客户端会像执行事务那样收集起用户要执行的所有命令，只是不再使用MULTI和EXEC包裹这些命令。所以如果用户需要向
+Redis发送多条命令，并且对于这些命令来说，一个命令的执行结果并不会影响另一个命令的输入，并且这些命令也不需要以事务的方式来执行，我们可以通过这种方式来进一步提升Redis的整体性能。
+
+## 4.6 关于性能方面的注意事项 ##
+
+要对redis的性能进行优化，用户首先要弄清各种类型的Redis命令到底能跑多快，而这一点可以通过调用redis附带的性能测试程序redis-benchmark来得知。
+
+```
+# 给定‘-q’选项让程序简化输出结果，给定‘-c 1’选项让程序只使用一个客户端来进行测试，如果不给定任何参数，将使用50个客户端来进行性能测试。
+$ redis-benchmark -c 1 -q
+
+PING_INLINE: 35460.99 requests per second
+PING_BULK: 37453.18 requests per second
+SET: 33222.59 requests per second
+GET: 34843.21 requests per second
+INCR: 35335.69 requests per second
+LPUSH: 33333.33 requests per second
+LPOP: 33333.33 requests per second
+SADD: 32154.34 requests per second
+SPOP: 35335.69 requests per second
+LPUSH (needed to benchmark LRANGE): 29673.59 requests per second
+LRANGE_100 (first 100 elements): 21786.49 requests per second
+LRANGE_300 (first 300 elements): 10593.22 requests per second
+LRANGE_500 (first 450 elements): 7880.22 requests per second
+LRANGE_600 (first 600 elements): 6191.95 requests per second
+MSET (10 keys): 29069.77 requests per second
+
+```
+
+下面列举一些可能引起性能问题的原因：
+
+（1）性能或者错误：单个客户端的性能达到redis-benchmark的50% ~ 60%
+可能的原因：只是不使用流水线时的预期性能
+解决方法：无
+
+（2）性能或者错误：单个客户端的性能达到redis-benchmark的25% ~ 30%
+可能的原因：对于每个命令或者每组命令都创建了新的连接
+解决方法：重用已有的redis连接
+
+（3）性能或者错误：客户端返回错误：“Cannot assign requested address”（无法分配指定的地址）
+可能的原因：对于每个命令或者每组命令都创建了新的连接
+解决方法：重用已有的redis连接
+
+大部分Redis的客户端都提供了某种级别的内置连接池。以python的redis客户端为例，对于每个redis服务器，用户只需要创建一个redis.Redis()对象，该对象就会按需创建连接，重用已有的连接并关闭超时的连接，并且python客户端的连接池还可以安全地应用于多线程环境和多进程环境。
 
 
 
